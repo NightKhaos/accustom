@@ -3,6 +3,7 @@
 These are constants are the Custom Resource Request Type Constants
 """
 
+
 class Status:
     """CloudFormation Custom Resource Status Constants
 
@@ -10,6 +11,7 @@ class Status:
     """
     SUCCESS = 'SUCCESS'
     FAILED = 'FAILED'
+
 
 class RequestType:
     """CloudFormation Custom Resource Request Type Constants
@@ -20,3 +22,9 @@ class RequestType:
     UPDATE = 'Update'
     DELETE = 'Delete'
 
+
+class RedactMode:
+    """RedactMode Options"""
+
+    BLACKLIST = 'black'
+    WHITELIST = 'white'

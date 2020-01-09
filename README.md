@@ -12,27 +12,30 @@ accustom can be found under PyPI at [https://pypi.python.org/pypi/accustom](http
 To install:
 
 ```bash
-pip3 install accustom
+python3 -m pip install accustom
 ```
 
-To create a Lambda Code Zip with accustom included:
+To create a Lambda Code Zip with accustom and dependencies  (including `requests`), create a directory with only your
+code in it and run the following. Alternatively you can create a Lambda Layer with Accustom and dependencies installed
+and use that as your base layer for custom resources.  
 
 ```bash
-pip3 install accustom -t . --no-deps
-zip code.zip function.py accustom -r 
+python3 -m pip install accustom -t .
+zip code.zip * -r 
 ```
 
 ## Quickstart
 
 The quickest way to use this library is to use the standalone decorator `@accustom.sdecorator`, in a Lambda function.
 
-    import accustom
-    @accustom.sdecorator(expectedProperties=['key1','key2'])
-    def resource_handler(event, context):
-        sum = (float(event['ResourceProperties']['key1']) +
-              float(event['ResourceProperties']['key2']))
-            return { 'sum' : sum }
-
+```python
+import accustom
+@accustom.sdecorator(expectedProperties=['key1','key2'])
+def resource_handler(event, context):
+     sum = (float(event['ResourceProperties']['key1']) +
+            float(event['ResourceProperties']['key2']))
+     return { 'sum' : sum }
+```
 
 In this configuration, the decorator will check to make sure the properties `key1` and `key2` have been passed by the user, and automatically send a response back to CloudFormation based upon the `event` object.
 
@@ -50,6 +53,8 @@ It takes the following options:
 
 - `enforceUseOfClass` (Boolean) : When this is set to `True`, you must use a `ResponseObject`. This is implicitly set to true if no Lambda Context is provided.
 - `hideResourceDeleteFailure` (Boolean) : When this is set to `True` the function will return `SUCCESS` even on getting an Exception for `Delete` requests.
+- `redactConfig` (accustom.RedactionConfig) : For more details on how this works please see "Redacting Confidential Information From Logs"
+- `timeoutFunction` (Boolean): Will automatically send a failure signal to CloudFormation before Lambda timeout provided that this function is executed in Lambda.
 
 Without a `ResponseObject` the decorator will make the following assumptions:
 - if a Lambda Context is not passed, the function will return `FAILED` 
@@ -70,9 +75,9 @@ It takes the following option:
 The most useful of these options is `expectedProperties`. With it is possible to quickly define mandatory properties for your resource and fail if they are not included.
 
 ### `@accustom.sdecorator()`
-This decorator is just a combination of `@accustom.decorator()` and `@accustom.rdecorator()`. This allows you have a single, stand alone resource handler that has some defined properties and can automatically handle delete. The options available to it is the combination of both of the options available to the other two Decorators.
+This decorator is just a combination of `@accustom.decorator()` and `@accustom.rdecorator()`. This allows you have a single, stand alone resource handler that has some defined properties and can automatically handle delete. The options available to it is the combination of both of the options available to the other two Decorators, with the exception of `redactProperties` which takes an accustom.StandaloneRedactionConfig object instead of a accustom.RedactionConfig object. For more information on `redactProperties` see "Redacting Confidential Information From Logs".
 
-The only important note about combining these two decorators is that `hideResourceDeleteFailure` becomes redundant if `decoratorHandleDelete` is set to `True`.
+The other important note about combining these two decorators is that `hideResourceDeleteFailure` becomes redundant if `decoratorHandleDelete` is set to `True`.
 
 ## Response Function and Object
 The `cfnresponse()` function and the `ResponseObject` are convenience function for interacting with CloudFormation.
@@ -83,9 +88,13 @@ The `cfnresponse()` function and the `ResponseObject` are convenience function f
 ### `ResponseObject`
 The `ResponseObject` allows you to define a message to be sent to CloudFormation. It only has one method, `send()`, which uses the `cfnresponse()` function under the hood to fire the event. A response object can be initialised and fired with:
 
-        import accustom
-        r = accustom.ResponseObject()
-        r.send(event)
+```python
+import accustom
+
+def handler(event, context):
+    r = accustom.ResponseObject()
+    r.send(event)
+```
 
 If you are using the decorator pattern it is strongly recommended that you do not invoke the `send()` method, and instead allow the decorator to process the sending of the events for you.
 
@@ -95,9 +104,98 @@ To construct a response object you can provide the following optional parameters
 - `physicalResourceId` (String) : Physical resource ID to be used in the response
 - `reason` (String) : Reason to pass back to CloudFormation in the response Object
 - `responseStatus` (accustom.Status): response Status to use in the response Object, defaults to `SUCCESS`
+- `squashPrintResponse` (Boolean) : In `DEBUG` logging the function will often print out the `Data` section of the response. If the `Data` contains confidential information you'll want to squash this output. This option, when set to `True`, will squash the output.
+
+## Logging Recommendations
+The decorators utilise the [logging](https://docs.python.org/3/library/logging.html) library for logging. It is strongly
+recommended that your function does the same, and sets the logging level to at least `INFO`. Ensure the log level is set
+_before_ importing Accustom. If logging in `DEBUG` mode se below:
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+logging.getLogger().setLevel(logging.INFO)
+import accustom
+```
+
+## Redacting Confidential Information From `DEBUG` Logs
+If you often pass confidential information like passwords and secrets in properties to Custom Resources, you may want to prevent certain properties from being printed to debug logs. To help with this we provide a functionality to either blacklist or whitelist Resource Properties based upon provided regular expressions.
+
+To utilise this functionality you must initialise and include a `RedactionConfig`. A `RedactionConfig` consists of some flags to define the redaction mode and if the response URL should be redacted, as well as a series of `RedactionRuleSet` objects that define what to redact based upon regular expressions. There is a special case of `RedactionConfig` called a `StandaloneRedactionConfig` that has one, and only one, `RedactionRuleSet` that is provided at initialisation.
+
+Each `RedactionRuleSet` defines a single regex that defines which ResourceTypes this rule set should applied too. You can then apply any number of rules, based upon explicit an property name, or a regex. Please see the definitions and an example below.
+
+### `RedactionRuleSet`
+The `RedactionRuleSet` object allows you to define a series of properties or regexes which to whitelist or blacklist for a given resource type regex. It is initialised with the following:
+
+- `resourceRegex` (String) : The regex used to work out what resources to apply this too.
+
+#### `add_property_regex(propertiesRegex)`
+
+- `propertiesRegex` (String) : The regex used to work out what properties to whitelist/blacklist
+
+#### `add_property(propertyName)`
+
+- `propertyName` (String) : The name of the property to whitelist/blacklist
+
+
+### `RedactionConfig`
+The `RedactionConfig` object allows you to create a collection of `RedactionRuleSet` objects as well as define what mode (whitelist/blacklist) to use, and if the presigned URL provided by CloudFormation should be redacted from the logs.
+
+- `redactMode` (accustom.RedactMode) : What redaction mode should be used, if it should be a blacklist or whitelist
+- `redactResponseURL` (Boolean) : If the response URL should be not be logged.
+
+#### `add_rule_set(ruleSet)`
+
+- `ruleSet` (accustom.RedactionRuleSet) : The rule set to be added to the RedactionConfig
+
+### `StandaloneRedactionConfig`
+The `StandaloneRedactionConfig` object allows you to apply a single `RedactionRuleSet` object as well as define what mode (whitelist/blacklist) to use, and if the presigned URL provided by CloudFormation should be redacted from the logs.
+
+- `redactMode` (accustom.RedactMode) : What redaction mode should be used, if it should be a blacklist or whitelist
+- `redactResponseURL` (Boolean) : If the response URL should be not be logged.
+- `ruleSet` (accustom.RedactionRuleSet) : The rule set to be added to the RedactionConfig
+
+### Example of Redaction
+
+The below example takes in two rule sets. The first ruleset applies to all resources types, and the second ruleset applies only to the `Custom::Test` resource type.
+
+All resources will have properties called `Test` and `Example` redacted and replaced with `[REDATED]`. The `Custom::Test` resource will also additionally redact properties called `Custom` and those that *start with* `DeleteMe`.
+
+Finally, as `redactResponseURL` is set to `True`, the response URL will not be printed in the debug logs.
+   
+```python
+from accustom import RedactionRuleSet, RedactionConfig, decorator
+
+ruleSetDefault = RedactionRuleSet()
+ruleSetDefault.add_property_regex('^Test$')
+ruleSetDefault.add_property('Example')
+
+ruleSetCustom = RedactionRuleSet('^Custom::Test$')
+ruleSetCustom.add_property('Custom')
+ruleSetCustom.add_property_regex('^DeleteMe.*$')
+    
+rc = RedactionConfig(redactResponseURL=True)
+rc.add_rule_set(ruleSetDefault)
+rc.add_rule_set(ruleSetCustom)
+    
+@decorator(redactConfig=rc)
+def resource_handler(event, context):
+    sum = (float(event['ResourceProperties']['Test']) +
+           float(event['ResourceProperties']['Example']))
+    return { 'sum' : sum }
+```
+
+## Note on Timeouts and Permissions
+The timeout is implemented using a *synchronous chained invocation* of your Lambda function. For this reason, please be aware of the following limitations:
+
+- The function must have access to the Lambda API Endpoints in order to self invoke.
+- The function must have permission to self invoke (i.e. lambda:InvokeFunction permission).
+
+If your requirements violate any of these conditions, set the `timeoutFunction` option to `False`. Please also note that this will *double* the invocations per request, so if you're not in the free tier for Lambda make sure you are aware of this as it may increase costs.
 
 ## Constants
-We provide two constants for ease of use:
+We provide three constants for ease of use:
 
 - Static value : how to access
 
@@ -109,6 +207,11 @@ We provide two constants for ease of use:
 - `Create` : `accustom.RequestType.CREATE`
 - `Update` : `accustom.RequestType.UPDATE`
 - `Delete` : `accustom.RequestType.DELETE`
+
+### `RedactMode`
+
+- Blacklisting : `accustom.RedactMode.BLACKLIST`
+- Whitelisting : `accustom.RedactMode.WHITELIST`
 
 ## How to Contribute
 Feel free to open issues, fork, or submit a pull request:
